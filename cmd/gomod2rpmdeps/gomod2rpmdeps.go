@@ -131,50 +131,89 @@ func parseModuleLine(line string) (goModuleInfo, error) {
 func pseudoVersionToRpmVersion(pseudoVersion string) (string, error) {
 	// https://golang.org/ref/mod#pseudo-versions
 
-	versionRegexp := regexp.MustCompile("^v[0-9]+.[0-9]+.[0-9]+$")
-	versionIncompatibleRegexp := regexp.MustCompile(`^v[0-9]+.[0-9]+.[0-9]+\+incompatible$`)
-	dateRegexp := regexp.MustCompile("^([a-z]*.)?(?:0.)*([0-9]{8})[0-9]{6}$")
-	commitRegexp := regexp.MustCompile("^[0-9a-f]{12}$")
+	versionRegexp := regexp.MustCompile("^(v[0-9]+.[0-9]+.[0-9]+)")
+	dateRegexp := regexp.MustCompile("([0-9]{8})[0-9]{6}$")
+	commitRegexp := regexp.MustCompile("-([0-9a-f]{12})$")
+	prereleaseRegexp := regexp.MustCompile("^-(?:0.)?([a-z][a-z0-9]+).*$")
 
-	substrings := strings.Split(pseudoVersion, "-")
-	switch len(substrings) {
-	case 1:
-		// v1.2.3
-		if versionRegexp.MatchString(substrings[0]) {
-			return strings.TrimPrefix(substrings[0], "v"), nil
-		}
-		// v1.2.3+incompatible
-		if versionIncompatibleRegexp.MatchString(substrings[0]) {
-			return strings.TrimSuffix(strings.TrimPrefix(substrings[0], "v"), "+incompatible"), nil
-		}
-		return "", fmt.Errorf("Failed to parse version substring: %s", substrings[0])
-
-	case 3:
-		// v1.2.3-202011221345-0123456789abc
-		// v1.1.2-0.20210202002709-95e28344e08c
-		// v0.0.0-alpha.0.0.20201126035554-299b6af535d1
-		if !versionRegexp.MatchString(substrings[0]) {
-			return "", fmt.Errorf("Failed to parse version substring: %s", substrings[0])
-		}
-		version := strings.TrimPrefix(substrings[0], "v")
-
-		dateSubstrings := dateRegexp.FindStringSubmatch(substrings[1])
-		if dateSubstrings == nil || len(dateSubstrings) != 3 {
-			return "", fmt.Errorf("Failed to parse date substring: %s", substrings[1])
-		}
-		extraver := dateSubstrings[1]
-		date := dateSubstrings[2]
-
-		if !commitRegexp.MatchString(substrings[2]) {
-			return "", fmt.Errorf("Failed to parse commit substring: %s", substrings[2])
-		}
-		commit := substrings[2]
-		snapinfo := fmt.Sprintf("%sgit%s", date, commit)
-
-		return fmt.Sprintf("%s-0.%s%s", version, extraver, snapinfo), nil
-	default:
-		return "", fmt.Errorf("Failed to parse pseudoversion")
+	// v1.2.3-xx+incompatible
+	if strings.HasSuffix(pseudoVersion, "+incompatible") {
+		pseudoVersion = strings.TrimSuffix(pseudoVersion, "+incompatible")
 	}
+
+	/*
+		substrings := strings.Split(pseudoVersion, "-")
+		if len(substrings) == 0 {
+			return "", fmt.Errorf("Empty version string")
+		}
+	*/
+
+	// v1.2.3
+	var version string
+	substrings := versionRegexp.FindStringSubmatch(pseudoVersion)
+	if len(substrings) != 2 {
+		return "", fmt.Errorf("Failed to parse version substring: %s", pseudoVersion)
+	}
+	version = strings.TrimPrefix(substrings[1], "v")
+	pseudoVersion = pseudoVersion[len(substrings[0]):]
+	debug("version: %s (left: %s)\n", version, pseudoVersion)
+
+	if pseudoVersion == "" {
+		return version, nil
+	}
+
+	// -0123456789abc
+	var commit string
+	substrings = commitRegexp.FindStringSubmatch(pseudoVersion)
+	if substrings != nil {
+		if len(substrings) != 2 {
+			return "", fmt.Errorf("Failed to parse commit substring: %s", pseudoVersion)
+		}
+		pseudoVersion = pseudoVersion[:len(pseudoVersion)-len(substrings[0])]
+		commit = substrings[1]
+	}
+	debug("commit: %s (left: %s)\n", commit, pseudoVersion)
+
+	// -20200101121212
+	var date string
+	substrings = dateRegexp.FindStringSubmatch(pseudoVersion)
+	if substrings != nil {
+		if len(substrings) != 2 {
+			return "", fmt.Errorf("Failed to parse date substring: %s", pseudoVersion)
+		}
+		pseudoVersion = pseudoVersion[:len(pseudoVersion)-len(substrings[0])]
+		date = substrings[1]
+	}
+	debug("date: %s (left: %s)\n", date, pseudoVersion)
+
+	// parse prerelease, everything between v1.2.3- at the beginining of
+	// the version string and the date/commit at the end of the version
+	// string
+	var prerelease string
+	substrings = prereleaseRegexp.FindStringSubmatch(pseudoVersion)
+	if substrings != nil {
+		if len(substrings) != 2 {
+			return "", fmt.Errorf("Failed to parse prerelease substring: %s", pseudoVersion)
+		}
+		prerelease = substrings[1]
+	}
+	debug("prelease: %s\n", prerelease)
+
+	var rpmVersion strings.Builder
+	rpmVersion.WriteString(version)
+	rpmVersion.WriteString("-0")
+	if prerelease != "" {
+		rpmVersion.WriteString(".")
+		rpmVersion.WriteString(prerelease)
+	}
+	if date != "" && commit != "" {
+		rpmVersion.WriteString(".")
+		rpmVersion.WriteString(date)
+		rpmVersion.WriteString("git")
+		rpmVersion.WriteString(commit)
+	}
+
+	return rpmVersion.String(), nil
 }
 
 func printBundledProvides(vendoredModules []goModuleInfo) {
@@ -224,4 +263,10 @@ func main() {
 	}
 
 	printBundledProvides(vendoredModules)
+}
+
+func debug(format string, args ...interface{}) {
+	if os.Getenv("GOMOD2RPMDEPS_DEBUG") != "" {
+		fmt.Printf(format, args...)
+	}
 }
