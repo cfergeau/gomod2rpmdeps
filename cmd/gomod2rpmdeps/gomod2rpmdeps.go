@@ -141,13 +141,6 @@ func pseudoVersionToRpmVersion(pseudoVersion string) (string, error) {
 		pseudoVersion = strings.TrimSuffix(pseudoVersion, "+incompatible")
 	}
 
-	/*
-		substrings := strings.Split(pseudoVersion, "-")
-		if len(substrings) == 0 {
-			return "", fmt.Errorf("Empty version string")
-		}
-	*/
-
 	// v1.2.3
 	var version string
 	substrings := versionRegexp.FindStringSubmatch(pseudoVersion)
